@@ -1,11 +1,5 @@
 # Virtual environments
 venv/
-.venv/
-env/
-.env/
-
-# Python cache
-__pycache__/
-
-# Jupyter
-.ipynb_checkpoints/
+model/__pycache__/
+data/processed/
+model/saved_models/
