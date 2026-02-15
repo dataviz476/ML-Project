@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import pickle
 import subprocess
 from pathlib import Path
@@ -17,29 +18,41 @@ from model.evaluate import compute_metrics
 # Page Setup
 # ----------------------------------
 st.set_page_config(page_title="Software Defect Prediction", layout="wide")
-
 st.title("Software Defect Prediction System")
-st.caption(
-    "Train models in the cloud, upload test data, evaluate metrics, and visualize results."
-)
+st.caption("Train models in the cloud, upload test data, evaluate metrics, and visualize results.")
 
-# ----------------------------------
-# Paths
-# ----------------------------------
 TARGET_COL = "defect"
 
-MODEL_DIR = Path("model/saved_models")
+# project-root-safe paths
+ROOT = Path(__file__).resolve().parent
+MODEL_DIR = ROOT / "model" / "saved_models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-DATA_PATH = Path("data/raw/software_defect_prediction_dataset.csv")
+DATA_PATH = ROOT / "data" / "raw" / "software_defect_prediction_dataset.csv"
 
 # ----------------------------------
-# Sidebar Setup
+# Sidebar: Environment + Setup
 # ----------------------------------
+st.sidebar.header("Environment")
+st.sidebar.write("Python:", sys.version.split()[0])
+st.sidebar.write("Python executable:")
+st.sidebar.code(sys.executable)
+
+# quick dependency check (so you can SEE it, not guess)
+for pkg in ["numpy", "pandas", "sklearn"]:
+    try:
+        __import__(pkg)
+        st.sidebar.success(f"{pkg} OK")
+    except Exception:
+        st.sidebar.error(f"{pkg} missing")
+
 st.sidebar.header("Setup")
-
 st.sidebar.write("Training dataset path:")
 st.sidebar.code(str(DATA_PATH))
+
+if not DATA_PATH.exists():
+    st.sidebar.error("Dataset not found at the above path (case-sensitive on Linux).")
+    st.stop()
 
 # ----------------------------------
 # Train Models Button
@@ -47,30 +60,33 @@ st.sidebar.code(str(DATA_PATH))
 train_clicked = st.sidebar.button("Train models now")
 
 if train_clicked:
-    if not DATA_PATH.exists():
-        st.error("Training dataset not found in repository.")
-        st.stop()
+    st.info("Training started...")
 
-    st.info("Training started... please wait.")
-
+    # IMPORTANT FIX: use sys.executable, NOT "python"
     proc = subprocess.run(
-        ["python", "-m", "model.train_all"],
+        [sys.executable, "-m", "model.train_all"],
+        cwd=str(ROOT),  # ensure working directory = repo root
         capture_output=True,
         text=True,
     )
 
-    st.subheader("Training Output")
-    st.code(proc.stdout)
+    st.subheader("Training Output (stdout)")
+    st.code(proc.stdout if proc.stdout else "No stdout output.")
 
     if proc.stderr:
-        st.subheader("Errors")
+        st.subheader("Training Output (stderr)")
         st.code(proc.stderr)
 
     if proc.returncode != 0:
-        st.error("Training failed. Check errors above.")
+        st.error("Training failed. See stderr above.")
         st.stop()
 
-    st.success("Training completed. Reloading...")
+    # show what got created
+    created = sorted([p.name for p in MODEL_DIR.glob("*.pkl")])
+    st.success("Training completed.")
+    st.write("Saved models:")
+    st.code("\n".join(created) if created else "NO PKL FILES FOUND (check train_all.py save path)")
+
     st.rerun()
 
 # ----------------------------------
@@ -87,8 +103,7 @@ model_name = st.sidebar.selectbox("Select Model", available_models)
 # ----------------------------------
 # Upload Test CSV
 # ----------------------------------
-st.subheader("Upload Test Dataset")
-
+st.subheader("Upload Test Dataset (CSV)")
 uploaded_file = st.file_uploader(
     "Upload CSV containing all features and the 'defect' column.",
     type=["csv"],
@@ -100,23 +115,22 @@ if uploaded_file is None:
 
 df = pd.read_csv(uploaded_file)
 
-st.write("Preview of Uploaded Data:")
+st.write("Preview:")
 st.dataframe(df.head())
 
 if TARGET_COL not in df.columns:
-    st.error("Uploaded dataset must contain 'defect' column.")
+    st.error("Uploaded dataset must contain 'defect' column for evaluation.")
     st.stop()
 
 # ----------------------------------
 # Load Model
 # ----------------------------------
 model_path = MODEL_DIR / f"{model_name}.pkl"
-
 with open(model_path, "rb") as f:
     model = pickle.load(f)
 
 # ----------------------------------
-# Prediction
+# Predict + Evaluate
 # ----------------------------------
 X = df.drop(columns=[TARGET_COL])
 y_true = df[TARGET_COL].to_numpy()
@@ -132,13 +146,9 @@ if hasattr(model, "predict_proba"):
 
 metrics = compute_metrics(y_true, y_pred, y_proba)
 
-# ----------------------------------
-# Display Metrics
-# ----------------------------------
 st.subheader("Evaluation Metrics")
 
 c1, c2, c3 = st.columns(3)
-
 c1.metric("Accuracy", f"{metrics['accuracy']:.4f}")
 c1.metric("Precision", f"{metrics['precision']:.4f}")
 
@@ -157,12 +167,10 @@ c3.metric("MCC", "N/A" if np.isnan(mcc_val) else f"{mcc_val:.4f}")
 st.subheader("Confusion Matrix")
 
 cm = confusion_matrix(y_true, y_pred)
-
 fig, ax = plt.subplots()
 sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
 ax.set_xlabel("Predicted")
 ax.set_ylabel("Actual")
-
 st.pyplot(fig)
 
 # ----------------------------------
@@ -171,9 +179,6 @@ st.pyplot(fig)
 st.subheader("Classification Report")
 st.text(classification_report(y_true, y_pred))
 
-# ----------------------------------
-# Show Predictions
-# ----------------------------------
 with st.expander("View Predictions"):
     out_df = df[[TARGET_COL]].copy()
     out_df["predicted"] = y_pred
